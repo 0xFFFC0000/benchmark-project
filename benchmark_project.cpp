@@ -42,6 +42,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <rpc/client.h>
 
 namespace process = boost::process;
 namespace filesystem = boost::filesystem;
@@ -743,92 +744,100 @@ std::chrono::milliseconds do_benchmark(filesystem::path daemon_exec_path)
     boost::condition_variable daemon_terminator;
     std::thread daemon_thread(create_offline_daemon, std::ref(daemon), std::ref(daemon_terminator));
 
-    if (!filesystem::exists(WalletRPC::EXEC_PATH)) {
-        LDIE(WalletRPC::EXEC_PATH.string() + " does not exist.", -1);
-    }
+    // if (!filesystem::exists(WalletRPC::EXEC_PATH)) {
+    //     LDIE(WalletRPC::EXEC_PATH.string() + " does not exist.", -1);
+    // }
 
-    boost::condition_variable wallet_terminator;
-    auto wallet_rpc_creator = [&](int index) {
-        WalletRPC::walletrpc walletrpc;
-        walletrpc.rpc_port = WalletRPC::RPC_BASE_PORT + index;
-        walletrpc.password = "''";
-        walletrpc.daemon_port = Daemon::RPC_BASE_PORT;
-        walletrpc.ip_address = walletrpc.daemon_ip_address = WalletRPC::RPC_DEFAULT_IP;
-        walletrpc.log_level = 0;
-        walletrpc.max_concurrency = 128;
-        walletrpc.wallet_dir = WalletRPC::Default_wallet_location();
-        walletrpc.shared_ringdb_dir = WalletRPC::Default_wallet_location();
-        std::thread wallet_rpc_thread(run_wallet_rpc, std::ref(walletrpc), std::ref(wallet_terminator));
-        if (wallet_rpc_thread.joinable())
-            wallet_rpc_thread.join();
-    };
+    // boost::condition_variable wallet_terminator;
+    // auto wallet_rpc_creator = [&](int index) {
+    //     WalletRPC::walletrpc walletrpc;
+    //     walletrpc.rpc_port = WalletRPC::RPC_BASE_PORT + index;
+    //     walletrpc.password = "''";
+    //     walletrpc.daemon_port = Daemon::RPC_BASE_PORT;
+    //     walletrpc.ip_address = walletrpc.daemon_ip_address = WalletRPC::RPC_DEFAULT_IP;
+    //     walletrpc.log_level = 0;
+    //     walletrpc.max_concurrency = 128;
+    //     walletrpc.wallet_dir = WalletRPC::Default_wallet_location();
+    //     walletrpc.shared_ringdb_dir = WalletRPC::Default_wallet_location();
+    //     std::thread wallet_rpc_thread(run_wallet_rpc, std::ref(walletrpc), std::ref(wallet_terminator));
+    //     if (wallet_rpc_thread.joinable())
+    //         wallet_rpc_thread.join();
+    // };
 
-    std::vector<std::thread> wallet_rpc_jobs;
-    for (int index = 0; index < number_of_wallets; ++index) {
-        wallet_rpc_jobs.push_back(std::thread(wallet_rpc_creator, index));
-    }
+    // std::vector<std::thread> wallet_rpc_jobs;
+    // for (int index = 0; index < number_of_wallets; ++index) {
+    //     wallet_rpc_jobs.push_back(std::thread(wallet_rpc_creator, index));
+    // }
 
     // std::this_thread::sleep_for(std::chrono::seconds(number_of_wallets > 10 ? number_of_wallets : 10));
     std::this_thread::sleep_for(std::chrono::seconds(10));
 
     auto wallet_benchmark = [&](int max_iter, int index) {
         for (int iter = 0; iter < max_iter; ++iter) {
-            std::string request_json = generate_open_wallet_request(index);
-            cpr::Url url { std::format("http://{}:{}/json_rpc", WalletRPC::RPC_DEFAULT_IP, WalletRPC::RPC_BASE_PORT + index) };
-            cpr::Header header { { "'Content-Type", "application/json" } };
-
-            long status_code = 0;
-            // do {
-            cpr::Response response = cpr::Post(url, header, cpr::Body { request_json });
-            status_code = response.status_code;
-            if (status_code == 200) {
-                LTRACE << "Wallet " << std::to_string(index) << " opened.";
-            } else if (response.status_code != 200) {
-                LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet open : " << std::to_string(index);
-            }
-            // } while (status_code != 200);
-
-            // call get address and save the wallet address
-            request_json = generate_check_balance_request();
-            response = cpr::Post(url, header, cpr::Body { request_json });
-            status_code = response.status_code;
-            if (status_code == 200) {
-                LTRACE << "Wallet " << std::to_string(index) << " get_balance.";
-            } else {
-                LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet get_balance : " << std::to_string(index);
+            // Creating a client that connects to the localhost on port 8080
+            rpc::client client(WalletRPC::RPC_DEFAULT_IP, WalletRPC::RPC_BASE_PORT + index);
+            // Calling a function with paramters and converting the result to int
+            auto result = client.call("get_blocks_by_height.bin", 1).as<char*>();
+            for (int i = 0; i < 32; ++i) {
+                std::cout << "The result is: " << result[i] << std::endl;
             }
 
-            // call get address and save the wallet address
-            request_json = generate_refresh_request();
-            response = cpr::Post(url, header, cpr::Body { request_json });
-            status_code = response.status_code;
-            if (status_code == 200) {
-                LTRACE << "Wallet " << std::to_string(index) << " refreshed.";
-            } else {
-                LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet refresh : " << std::to_string(index);
-            }
+            // std::string request_json = generate_open_wallet_request(index);
+            // cpr::Url url { std::format("http://{}:{}/json_rpc", WalletRPC::RPC_DEFAULT_IP, WalletRPC::RPC_BASE_PORT + index) };
+            // cpr::Header header { { "'Content-Type", "application/json" } };
 
-            // call get address and save the wallet address
-            request_json = generate_check_balance_request();
-            response = cpr::Post(url, header, cpr::Body { request_json });
-            status_code = response.status_code;
-            if (status_code == 200) {
-                LTRACE << "Wallet " << std::to_string(index) << " get_balance.";
-            } else {
-                LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet get_balance : " << std::to_string(index);
-            }
+            // long status_code = 0;
+            // // do {
+            // cpr::Response response = cpr::Post(url, header, cpr::Body { request_json });
+            // status_code = response.status_code;
+            // if (status_code == 200) {
+            //     LTRACE << "Wallet " << std::to_string(index) << " opened.";
+            // } else if (response.status_code != 200) {
+            //     LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet open : " << std::to_string(index);
+            // }
+            // // } while (status_code != 200);
 
-            // call get address and save the wallet address
-            request_json = generate_close_wallet_request();
-            response = cpr::Post(url, header, cpr::Body { request_json });
-            status_code = response.status_code;
-            if (status_code == 200) {
-                LTRACE << "Wallet " << std::to_string(index) << " closed.";
-            } else {
-                LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet close : " << std::to_string(index);
-            }
+            // // call get address and save the wallet address
+            // request_json = generate_check_balance_request();
+            // response = cpr::Post(url, header, cpr::Body { request_json });
+            // status_code = response.status_code;
+            // if (status_code == 200) {
+            //     LTRACE << "Wallet " << std::to_string(index) << " get_balance.";
+            // } else {
+            //     LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet get_balance : " << std::to_string(index);
+            // }
 
-            delete_wallet_cache_for_ith(index);
+            // // call get address and save the wallet address
+            // request_json = generate_refresh_request();
+            // response = cpr::Post(url, header, cpr::Body { request_json });
+            // status_code = response.status_code;
+            // if (status_code == 200) {
+            //     LTRACE << "Wallet " << std::to_string(index) << " refreshed.";
+            // } else {
+            //     LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet refresh : " << std::to_string(index);
+            // }
+
+            // // call get address and save the wallet address
+            // request_json = generate_check_balance_request();
+            // response = cpr::Post(url, header, cpr::Body { request_json });
+            // status_code = response.status_code;
+            // if (status_code == 200) {
+            //     LTRACE << "Wallet " << std::to_string(index) << " get_balance.";
+            // } else {
+            //     LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet get_balance : " << std::to_string(index);
+            // }
+
+            // // call get address and save the wallet address
+            // request_json = generate_close_wallet_request();
+            // response = cpr::Post(url, header, cpr::Body { request_json });
+            // status_code = response.status_code;
+            // if (status_code == 200) {
+            //     LTRACE << "Wallet " << std::to_string(index) << " closed.";
+            // } else {
+            //     LTRACE << "Wallet incorrect  " << response.status_code << " as status_code for wallet close : " << std::to_string(index);
+            // }
+
+            // delete_wallet_cache_for_ith(index);
         }
     };
 
@@ -859,13 +868,13 @@ std::chrono::milliseconds do_benchmark(filesystem::path daemon_exec_path)
             wallet_creator_jobs.at(index).join();
     }
 
-    wallet_terminator.notify_all();
+    // wallet_terminator.notify_all();
     daemon_terminator.notify_all();
 
-    for (int index = 0; index < number_of_wallets; ++index) {
-        if (wallet_rpc_jobs.at(index).joinable())
-            wallet_rpc_jobs.at(index).join();
-    }
+    // for (int index = 0; index < number_of_wallets; ++index) {
+    //     if (wallet_rpc_jobs.at(index).joinable())
+    //         wallet_rpc_jobs.at(index).join();
+    // }
 
     auto end = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
@@ -906,13 +915,13 @@ int main(int argc, char** argv)
     LINFO << "Start benchmarking with test...";
     auto test_duration = do_benchmark(Daemon::TEST_EXEC_PATH);
 
-    if((test_duration / 1000).count() != (master_duration / 1000).count()) {
-        if (test_duration.count() < master_duration.count()) {
-            LINFO << "PR (test) was faster.";
-        } else {
-            LINFO << "master was faster.";
-        }
-    }
+    // if((test_duration / 1000).count() != (master_duration / 1000).count()) {
+    //     if (test_duration.count() < master_duration.count()) {
+    //         LINFO << "PR (test) was faster.";
+    //     } else {
+    //         LINFO << "master was faster.";
+    //     }
+    // }
 
     return 0;
 }

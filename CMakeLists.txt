@@ -34,7 +34,6 @@ set(googletest_dir "googletest")
 set(benchmark_dir "benchmark")
 set(asio_dir "asio")
 set(rpclib_dir "rpclib")
-set(json_rpc_cxx "json-rpc-cxx")
 
 # v1.14.x
 set(googletest_REQUIRED_COMMIT "f8d7d77c06936315286eb55f8de22cd23c188571")
@@ -44,6 +43,8 @@ set(benchmark_REQUIRED_COMMIT "344117638c8ff7e239044fd0fa7085839fc03021")
 set(asio_REQUIRED_COMMIT "f2fbbd824c1fafa67c1b9c7ee6e4d2649b343a46")
 # cpr 1.10.5
 set(cpr_REQUIRED_COMMIT "3b15fa82ea74739b574d705fea44959b58142eb8")
+# rpclib v2.3.0
+set(rpclib_REQUIRED_COMMIT "a663a1598a4b419123b2e13c0ae6a39c91dcf5b8")
 
 ################################################
 # Git submodules setup
@@ -53,6 +54,7 @@ if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
   set_submodule_with_specific_commit(${thirdparty_source}/${googletest_dir}      ${googletest_REQUIRED_COMMIT})
   set_submodule_with_specific_commit(${thirdparty_source}/${benchmark_dir}       ${benchmark_REQUIRED_COMMIT})
   set_submodule_with_specific_commit(${thirdparty_source}/${asio_dir}            ${asio_REQUIRED_COMMIT})
+  set_submodule_with_specific_commit(${thirdparty_source}/${rpclib_dir}          ${rpclib_REQUIRED_COMMIT})
 else()
   message(FATAL_ERROR "Cannot find git executable. Make sure you have installed git.")
 endif()
@@ -75,6 +77,9 @@ include(cmake/asio.cmake)
 # cpr
 include(cmake/cpr.cmake)
 
+################################################
+# rpclib
+include(cmake/rpclib.cmake)
 
 ################################################
 # Boost
@@ -89,4 +94,4 @@ endif()
 
 add_executable(benchmark_project benchmark_project.cpp)
 target_include_directories(benchmark_project PRIVATE ${Boost_INCLUDE_DIRS})
-target_link_libraries(benchmark_project PRIVATE gtest ${Boost_LIBRARIES} cpr::cpr)
+target_link_libraries(benchmark_project PRIVATE gtest ${Boost_LIBRARIES} cpr::cpr rpc)
