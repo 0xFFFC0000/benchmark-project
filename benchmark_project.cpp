@@ -36,6 +36,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <exception>
 #include <format>
 #include <iostream>
@@ -43,6 +44,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <utility>
 
 namespace process = boost::process;
@@ -128,7 +130,7 @@ struct walletrpc {
     std::string ip_address = RPC_DEFAULT_IP;
 
     size_t rpc_port;
-    size_t max_concurrency = 32;
+    size_t max_concurrency = 4;
     size_t max_log_file_size = (1024 << 20); // 1 GB
     size_t max_log_files = 1;
     std::string daemon_ip_address;
@@ -158,6 +160,9 @@ namespace Daemon {
 const std::string& EXEC_NAME = "monerod";
 filesystem::path TEST_EXEC_PATH;
 filesystem::path MASTER_EXEC_PATH;
+
+std::mutex daemons_pids_mutex;
+std::map<size_t, pid_t> daemons_pids;
 
 constexpr const int RPC_BASE_PORT = 4096;
 constexpr const int P2P_BASE_PORT = 28081;
@@ -205,10 +210,10 @@ constexpr const char RPC_SSL_CONTAINER[] = "--rpc-ssl=disabled";
 struct daemon {
     filesystem::path exec_path;
     std::string ip_address = RPC_DEFAULT_IP;
-    size_t log_level = 4;
+    size_t log_level = 2;
     size_t max_log_file_size = (1024 << 15); // 32 MB
     size_t max_log_files = 1;
-    size_t max_concurrency = 32;
+    size_t max_concurrency = 4;
     size_t max_connections_per_ip = (2048 << 10); // 2 MB
     size_t block_sync_size = 2048 << 16;
     size_t p2p_port;
@@ -767,16 +772,17 @@ void run_wallets(std::atomic<bool>& wallet_stop_condition, std::size_t number_of
     }
 
     // std::this_thread::sleep_for(std::chrono::seconds(number_of_nodes > 10 ? number_of_nodes : 10));
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    std::this_thread::sleep_for(std::chrono::seconds(15));
 
-    auto wallet_creater_call = [&](size_t index) {
+    auto wallet_creater_call = [&](int index) {
         std::string request_json = generate_create_wallet_request(index);
         cpr::Url url { std::format("http://{}:{}/json_rpc", WalletRPC::RPC_DEFAULT_IP, WalletRPC::RPC_BASE_PORT + index) };
         cpr::Header header { { "'Content-Type", "application/json" } };
+        cpr::Response response;
 
         long status_code = 0;
         do {
-            cpr::Response response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS));
+            response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS * 10));
             status_code = response.status_code;
             if (response.status_code == 200) {
                 LTRACE << "W" << index << " created successfully.";
@@ -787,7 +793,7 @@ void run_wallets(std::atomic<bool>& wallet_stop_condition, std::size_t number_of
 
         // call get address and save the wallet address
         request_json = generate_get_address_request();
-        cpr::Response response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS));
+        response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS));
         status_code = response.status_code;
         try {
             auto parsed = boost::json::parse(response.text);
@@ -817,7 +823,7 @@ void run_wallets(std::atomic<bool>& wallet_stop_condition, std::size_t number_of
             LTRACE << "W" << item.first << " : " << item.second;
         });
 
-    std::this_thread::sleep_for(std::chrono::seconds(15));
+    std::this_thread::sleep_for(std::chrono::seconds(25));
 
     // mining step is disabled
     // auto wallet_start_mining = [&](size_t index) {
@@ -853,9 +859,9 @@ void run_wallets(std::atomic<bool>& wallet_stop_condition, std::size_t number_of
     auto wallet_transfer = [&](std::atomic<bool>& wallet_transfer_stop_condition, size_t index) {
         long status_code = 0;
         while (!wallet_transfer_stop_condition.load()) {
-            // std::this_thread::sleep_for(std::chrono::milliseconds(((rand() % UPDATE_INTERVAL) + 1) * 100));
+            // std::this_thread::sleep_for(std::chrono::milliseconds((rand() % UPDATE_INTERVAL)  * 100));
             if (rand() % 2) { // 50% chance to send money
-                std::this_thread::sleep_for(std::chrono::seconds((rand() % UPDATE_INTERVAL)));
+                std::this_thread::sleep_for(std::chrono::seconds(rand() % UPDATE_INTERVAL));
                 continue;
             }
             LTRACE << "W" << index << " is running a transfer";
@@ -868,8 +874,8 @@ void run_wallets(std::atomic<bool>& wallet_stop_condition, std::size_t number_of
             cpr::Response response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS));
             status_code = response.status_code;
             if (response.status_code != 200) {
-                LERROR << "W" << index << " address : " << WalletRPC::address_wallet[index] << " is unresponsive.";
-                std::this_thread::sleep_for(std::chrono::seconds(UPDATE_INTERVAL));
+                LTRACE << "W" << index << " address : " << WalletRPC::address_wallet[index] << " is unresponsive.";
+                std::this_thread::sleep_for(std::chrono::seconds(rand() % UPDATE_INTERVAL));
                 continue;
             }
 
@@ -877,8 +883,8 @@ void run_wallets(std::atomic<bool>& wallet_stop_condition, std::size_t number_of
             request_json = generate_get_balance_request();
             response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS));
             if (response.status_code != 200) {
-                LERROR << "W" << index << " address : " << WalletRPC::address_wallet[index] << " is unresponsive.";
-                std::this_thread::sleep_for(std::chrono::seconds(UPDATE_INTERVAL));
+                LTRACE << "W" << index << " address : " << WalletRPC::address_wallet[index] << " is unresponsive.";
+                std::this_thread::sleep_for(std::chrono::seconds(rand() % UPDATE_INTERVAL));
                 continue;
             }
             // balance
@@ -887,7 +893,7 @@ void run_wallets(std::atomic<bool>& wallet_stop_condition, std::size_t number_of
 
             if (!unlocked_balance) {
                 LTRACE << "W" << index << " address : " << WalletRPC::address_wallet[index] << " has no unlocked balance.";
-                std::this_thread::sleep_for(std::chrono::seconds(UPDATE_INTERVAL));
+                std::this_thread::sleep_for(std::chrono::seconds(rand() % UPDATE_INTERVAL));
                 continue;
             }
 
@@ -990,6 +996,11 @@ void run_daemon(Daemon::daemon& daemon, size_t index, size_t seconds)
         exclusive_nodes,
         process::std_out > pipe_stream);
 
+    {
+        std::lock_guard<std::mutex> lock(Daemon::daemons_pids_mutex);
+        Daemon::daemons_pids.insert(std::make_pair(index, daemon_process.id()));
+    }
+
     std::string line;
 
     std::ofstream null_stream("/dev/null");
@@ -1018,7 +1029,7 @@ void run_daemons(std::atomic<bool>& daemon_stop_condition, std::size_t number_of
         // daemon.mining_threads = 2 + (index / 3);
         daemon.difficulty = 1;
         daemon.ip_address = daemon.p2p_ip = WalletRPC::RPC_DEFAULT_IP;
-        daemon.log_level = 4;
+        daemon.log_level = 2;
         daemon.data_dir = Daemon::Default_daemon_location(index);
         daemon.exec_path = Daemon::MASTER_EXEC_PATH;
         std::thread daemon_thread(run_daemon, std::ref(daemon), index, test_duration);
@@ -1035,11 +1046,16 @@ void run_daemons(std::atomic<bool>& daemon_stop_condition, std::size_t number_of
 
     // mimick mining with get_block_template and submit_block
     auto mimick_mining = [&](std::atomic<bool>& daemon_stop_condition, size_t index) {
+        do {
+            LTRACE << "W" << index << " address is empty, skip";
+            std::this_thread::sleep_for(std::chrono::seconds(UPDATE_INTERVAL));
+        } while (WalletRPC::address_wallet[index].empty());
+
         while (!daemon_stop_condition.load()) {
-            // std::this_thread::sleep_for(std::chrono::milliseconds(((rand() % UPDATE_INTERVAL) + 1) * 100));
-            if (WalletRPC::address_wallet[index].empty()) {
-                LTRACE << "W" << index << " address is empty, skip";
-                std::this_thread::sleep_for(std::chrono::seconds(UPDATE_INTERVAL));
+            // std::this_thread::sleep_for(std::chrono::milliseconds((rand() % UPDATE_INTERVAL)  * 100));
+
+            if (rand() % 200) { // 1% chance to get block template
+                std::this_thread::sleep_for(std::chrono::seconds(((rand() % UPDATE_INTERVAL))));
                 continue;
             }
             std::string block_blob;
@@ -1050,7 +1066,7 @@ void run_daemons(std::atomic<bool>& daemon_stop_condition, std::size_t number_of
             long status_code = 0;
             cpr::Response response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS));
             status_code = response.status_code;
-            if (response.status_code == 200 && rand() % 2) { // 50% chance to get block template
+            if (response.status_code == 200) {
                 LTRACE << "W" << index << " mined successfully";
                 // save blocktemplate_blob into block_blob
                 auto parsed = boost::json::parse(response.text);
@@ -1066,7 +1082,7 @@ void run_daemons(std::atomic<bool>& daemon_stop_condition, std::size_t number_of
             }
 
             // submit block
-            // std::this_thread::sleep_for(std::chrono::milliseconds(((rand() % UPDATE_INTERVAL) + 1) * 100));
+            // std::this_thread::sleep_for(std::chrono::milliseconds((rand() % UPDATE_INTERVAL)  * 100));
             request_json = generate_submit_block_request(block_blob);
             response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS));
             status_code = response.status_code;
@@ -1267,13 +1283,14 @@ void status_reporter(std::atomic<bool>& stop_condition, std::size_t number_of_no
     while (!stop_condition) {
         std::this_thread::sleep_for(std::chrono::seconds(UPDATE_INTERVAL));
         LINFO << "======================================================================";
+        size_t number_of_active_nodes = 0;
         for (std::size_t index = 0; index < number_of_nodes; ++index) {
-            // std::this_thread::sleep_for(std::chrono::milliseconds(((rand() % UPDATE_INTERVAL) + 1) * 10));
+            // std::this_thread::sleep_for(std::chrono::milliseconds((rand() % UPDATE_INTERVAL)  * 10));
             cpr::Url url { std::format("http://{}:{}/get_info", Daemon::RPC_DEFAULT_IP, Daemon::RPC_BASE_PORT + index) };
             cpr::Header header { { "Content-Type", "application/json" } };
             cpr::Response response = cpr::Get(url, header, cpr::Timeout(5000), cpr::Timeout(TIMEOUTMS));
             if (response.status_code != 200) {
-                LERROR << "N" << index << " is unresponsive.";
+                LTRACE << "N" << index << " is unresponsive.";
                 continue;
             }
             // Get Json and Parse it
@@ -1298,19 +1315,28 @@ void status_reporter(std::atomic<bool>& stop_condition, std::size_t number_of_no
             // tx_pool_size
             auto parsed_tx_pool_size = boost::json::parse(response.text);
             std::size_t tx_pool_size = value_to<std::size_t>(parsed_tx_pool_size.at("tx_pool_size"));
-            LINFO << "N" << index << " status: " << status
-                  << ", height: " << height << ", in : " << incoming
-                  << ", out : " << outgoing << ", tx count: " << tx_count
-                  << ", tx pool size: " << tx_pool_size << ", top block hash: " << top_block_hash;
+            number_of_active_nodes++;
+            std::lock_guard<std::mutex> lock(Daemon::daemons_pids_mutex);
+            LINFO << "N" << index
+                  << ", pid: " << Daemon::daemons_pids.at(index)
+                  << ", status: " << status
+                  << ", height: " << height
+                  << ", in: " << incoming
+                  << ", out: " << outgoing
+                  << ", tx count: " << tx_count
+                  << ", tx pool size: " << tx_pool_size
+                  << ", top block hash: " << top_block_hash.substr(0, 4)
+                  << ", active nodes: " << number_of_active_nodes;
         }
+        size_t number_of_active_wallets = 0;
         for (std::size_t index = 0; index < number_of_nodes; ++index) {
-            // std::this_thread::sleep_for(std::chrono::milliseconds(((rand() % UPDATE_INTERVAL) + 1) * 10));
+            // std::this_thread::sleep_for(std::chrono::milliseconds((rand() % UPDATE_INTERVAL)  * 10));
             cpr::Url url { std::format("http://{}:{}/json_rpc", WalletRPC::RPC_DEFAULT_IP, WalletRPC::RPC_BASE_PORT + index) };
             cpr::Header header { { "Content-Type", "application/json" } };
             std::string request_json = generate_get_address_request();
             cpr::Response response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS));
             if (response.status_code != 200) {
-                LERROR << "W" << index << " is unresponsive.";
+                LTRACE << "W" << index << " is unresponsive.";
                 continue;
             }
             // Get Json and Parse it
@@ -1325,15 +1351,20 @@ void status_reporter(std::atomic<bool>& stop_condition, std::size_t number_of_no
             request_json = generate_get_balance_request();
             response = cpr::Post(url, header, cpr::Body { request_json }, cpr::Timeout(TIMEOUTMS));
             if (response.status_code != 200) {
-                LERROR << "W" << index << " address : " << address << " is unresponsive.";
+                LTRACE << "W" << index << " address : " << address << " is unresponsive.";
                 continue;
             }
             // balance and unlocked balance
             auto parsed_balance = boost::json::parse(response.text);
             std::size_t balance = value_to<std::size_t>(parsed_balance.at("result").at("balance"));
             std::size_t unlocked_balance = value_to<std::size_t>(parsed_balance.at("result").at("unlocked_balance"));
+            number_of_active_wallets++;
 
-            LINFO << "W" << index << " address: " << address << " balance: " << balance << " unlocked balance: " << unlocked_balance;
+            LINFO << "W" << index
+                  << " address: " << address.substr(0, 6)
+                  << " balance: " << balance
+                  << " unlocked balance: " << unlocked_balance
+                  << " wallets: " << number_of_active_wallets;
         }
         LINFO << "======================================================================";
     }
